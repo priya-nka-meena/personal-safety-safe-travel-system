@@ -100,8 +100,8 @@ class SOSAlert(models.Model):
         on_delete=models.CASCADE,
         related_name='sos_alerts',
         limit_choices_to={'role': 'STUDENT'},
-        null=True,  # Temporarily nullable for migration - will be removed after data migration
-        blank=True
+        # null=True,  # Temporarily nullable for migration - will be removed after data migration
+        # blank=True
     )
     travel_session = models.ForeignKey(
         TravelSession,
@@ -112,6 +112,7 @@ class SOSAlert(models.Model):
     )
     location = models.CharField(max_length=255)
     description = models.TextField()
+   
     danger_level = models.IntegerField(default=3)  # Default to HIGH (3)
     timestamp = models.DateTimeField(auto_now_add=True)
     
