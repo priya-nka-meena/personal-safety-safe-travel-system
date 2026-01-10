@@ -55,15 +55,15 @@ class TravelSessionSerializer(serializers.ModelSerializer):
 
 
 class LiveLocationSerializer(serializers.ModelSerializer):
-    """Serializer for LiveLocation"""
+    """Serializer for LiveLocation - travel_session is set automatically by the view"""
     class Meta:
         model = LiveLocation
         fields = ['id', 'travel_session', 'latitude', 'longitude', 'timestamp']
-        read_only_fields = ['id', 'timestamp']
+        read_only_fields = ['id', 'travel_session', 'timestamp']
 
 
 class SOSAlertSerializer(serializers.ModelSerializer):
-    """Updated SOSAlert serializer"""
+    """Updated SOSAlert serializer - student and travel_session are set automatically by the view"""
     student_username = serializers.CharField(source='student.username', read_only=True)
     student_id = serializers.IntegerField(source='student.id', read_only=True)
 
@@ -73,5 +73,5 @@ class SOSAlertSerializer(serializers.ModelSerializer):
             'id', 'student', 'student_id', 'student_username', 'travel_session',
             'location', 'latitude', 'longitude', 'description', 'danger_level', 'timestamp'
         ]
-        read_only_fields = ['id', 'timestamp']
+        read_only_fields = ['id', 'student', 'travel_session', 'timestamp']
 
