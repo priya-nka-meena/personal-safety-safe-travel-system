@@ -2,15 +2,18 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from django.contrib.auth import authenticate
+from django.contrib.auth import authenticate, login as django_login, logout as django_logout
+from django.db.models import Q
 from django.utils import timezone
-from .models import CustomUser, SOSAlert, TravelSession, LiveLocation
+from django.views.decorators.csrf import ensure_csrf_cookie
+from .models import CustomUser, SOSAlert, TravelSession, LiveLocation, StudentParentLink
 from .serializers import (
     CustomUserSerializer,
     LoginSerializer,
     SOSAlertSerializer,
     TravelSessionSerializer,
-    LiveLocationSerializer
+    LiveLocationSerializer,
+    LinkStudentSerializer,
 )
 
 
@@ -91,12 +94,16 @@ def login(request):
                 pass
         
         if user is not None:
+            # Establish Django session so SessionAuthentication works for API calls
+            django_login(request, user)
             return Response({
                 'success': True,
                 'message': 'Login successful',
                 'user_id': user.id,
                 'role': user.role,
-                'username': user.username
+                'username': user.username,
+                'is_staff': user.is_staff,
+                'is_superuser': user.is_superuser,
             }, status=status.HTTP_200_OK)
         else:
             return Response({
@@ -108,6 +115,59 @@ def login(request):
         'success': False,
         'errors': serializer.errors
     }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+@ensure_csrf_cookie
+def auth_csrf(request):
+    """Set CSRF cookie for the SPA; required for session-authenticated POST requests."""
+    return Response({'detail': 'ok'})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout_view(request):
+    django_logout(request)
+    return Response({'success': True, 'message': 'Logged out'})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def auth_me(request):
+    """Return the current session user (validates session cookie)."""
+    user = request.user
+    payload = {
+        'authenticated': True,
+        'user_id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'role': user.role,
+        'is_staff': user.is_staff,
+        'is_superuser': user.is_superuser,
+    }
+    if user.role == 'STUDENT':
+        payload['invite_code'] = user.invite_code
+        payload['linked_parents_count'] = user.parent_links.count()
+    return Response(payload)
+
+
+def _find_student_by_identifier(identifier):
+    """Resolve a student by numeric ID, email, or invite code."""
+    identifier = (identifier or '').strip()
+    if not identifier:
+        return None
+
+    if identifier.isdigit():
+        student = CustomUser.objects.filter(id=int(identifier), role='STUDENT').first()
+        if student:
+            return student
+
+    student = CustomUser.objects.filter(
+        Q(email__iexact=identifier) | Q(invite_code__iexact=identifier),
+        role='STUDENT',
+    ).first()
+    return student
 
 
 # ==================== SOS ALERT APIs ====================
@@ -123,10 +183,13 @@ def sos_alert_list_create(request):
         # Students see their own alerts, parents see alerts from linked students
         if request.user.role == 'STUDENT':
             alerts = SOSAlert.objects.filter(student=request.user)
-        else:  # PARENT
-            # Get all students linked to this parent
+        elif request.user.role == 'PARENT':
             student_ids = request.user.student_links.values_list('student_id', flat=True)
             alerts = SOSAlert.objects.filter(student_id__in=student_ids)
+        elif request.user.is_staff:
+            alerts = SOSAlert.objects.all()
+        else:
+            alerts = SOSAlert.objects.none()
         
         serializer = SOSAlertSerializer(alerts, many=True)
         return Response(serializer.data)
@@ -151,10 +214,14 @@ def sos_alert_list_create(request):
             alert = serializer.save(
                 student=request.user,
                 travel_session=active_session,
-                danger_level=3  # HIGH
+                danger_level=3,
+                is_active=True,
             )
             
             return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
+        print("SOS ALERT - REQUEST DATA:", request.data)
+        print("SOS ALERT - SERIALIZER ERRORS:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -273,8 +340,171 @@ def location_update(request):
             'location': serializer.data
         }, status=status.HTTP_201_CREATED)
     
+    print("LOCATION UPDATE - REQUEST DATA:", request.data)
+    print("LOCATION UPDATE - SERIALIZER ERRORS:", serializer.errors)
     return Response({
         'success': False,
         'errors': serializer.errors
     }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def travel_status(request):
+    """Current travel session and latest location for the authenticated student."""
+    if request.user.role != 'STUDENT':
+        return Response({
+            'success': False,
+            'message': 'Only students can access travel status',
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    active_session = TravelSession.objects.filter(
+        student=request.user,
+        is_active=True,
+    ).first()
+
+    latest = None
+    if active_session:
+        loc = LiveLocation.objects.filter(travel_session=active_session).order_by('-timestamp').first()
+        if loc:
+            latest = {
+                'latitude': float(loc.latitude),
+                'longitude': float(loc.longitude),
+                'timestamp': loc.timestamp.isoformat(),
+            }
+
+    return Response({
+        'success': True,
+        'travel_active': active_session is not None,
+        'session_id': active_session.id if active_session else None,
+        'session_started_at': active_session.start_time.isoformat() if active_session else None,
+        'latest_location': latest,
+    })
+
+
+# ==================== PARENT MONITORING ====================
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def parent_monitoring(request):
+    """
+    Linked students, travel status, and latest live location for the authenticated parent.
+    """
+    if request.user.role != 'PARENT':
+        return Response({
+            'success': False,
+            'message': 'Only parents can access this resource',
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    links = StudentParentLink.objects.filter(parent=request.user).select_related('student')
+    students_payload = []
+    online_threshold = timezone.now() - timezone.timedelta(minutes=2)
+
+    for link in links:
+        student = link.student
+        active_session = TravelSession.objects.filter(
+            student=student,
+            is_active=True,
+        ).first()
+
+        latest = None
+        is_online = False
+        if active_session:
+            loc = LiveLocation.objects.filter(travel_session=active_session).order_by('-timestamp').first()
+            if loc:
+                latest = {
+                    'latitude': float(loc.latitude),
+                    'longitude': float(loc.longitude),
+                    'timestamp': loc.timestamp.isoformat(),
+                }
+                is_online = loc.timestamp >= online_threshold
+
+        students_payload.append({
+            'link_id': link.id,
+            'student_id': student.id,
+            'username': student.username,
+            'full_name': student.get_full_name() or student.username,
+            'travel_active': active_session is not None,
+            'is_online': is_online,
+            'session_id': active_session.id if active_session else None,
+            'session_started_at': active_session.start_time.isoformat() if active_session else None,
+            'latest_location': latest,
+        })
+
+    return Response({
+        'success': True,
+        'students': students_payload,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def parent_link_student(request):
+    """Parent links a student using student ID, email, or invite code."""
+    if request.user.role != 'PARENT':
+        return Response({
+            'success': False,
+            'message': 'Only parents can link students',
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = LinkStudentSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            'success': False,
+            'errors': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    identifier = serializer.validated_data['identifier']
+    student = _find_student_by_identifier(identifier)
+
+    if not student:
+        return Response({
+            'success': False,
+            'message': 'No student found with that ID, email, or invite code.',
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    if StudentParentLink.objects.filter(parent=request.user, student=student).exists():
+        return Response({
+            'success': False,
+            'message': 'This student is already linked to your account.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    link = StudentParentLink.objects.create(parent=request.user, student=student)
+    link_data = {
+        'link_id': link.id,
+        'student_id': student.id,
+        'username': student.username,
+        'full_name': student.get_full_name() or student.username,
+    }
+
+    return Response({
+        'success': True,
+        'message': f'Successfully linked with {link_data["full_name"]}.',
+        'link': link_data,
+    }, status=status.HTTP_201_CREATED)
+
+
+# ==================== ADMIN STATISTICS ====================
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_overview(request):
+    if not request.user.is_staff:
+        return Response({
+            'success': False,
+            'message': 'Admin access required',
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    return Response({
+        'success': True,
+        'total_users': CustomUser.objects.count(),
+        'total_students': CustomUser.objects.filter(role='STUDENT').count(),
+        'total_parents': CustomUser.objects.filter(role='PARENT').count(),
+        'active_travel_sessions': TravelSession.objects.filter(is_active=True).count(),
+        'sos_alerts': SOSAlert.objects.count(),
+        'active_sos_alerts': SOSAlert.objects.filter(is_active=True).count(),
+        'student_parent_links': StudentParentLink.objects.count(),
+    })
 

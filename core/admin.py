@@ -12,11 +12,11 @@ from .models import (
 @admin.register(CustomUser)
 class CustomUserAdmin(BaseUserAdmin):
     """Admin configuration for CustomUser"""
-    list_display = ['username', 'email', 'role', 'first_name', 'last_name', 'is_staff', 'date_joined']
+    list_display = ['username', 'email', 'role', 'invite_code', 'first_name', 'last_name', 'is_staff', 'date_joined']
     list_filter = ['role', 'is_staff', 'is_superuser', 'is_active', 'date_joined']
     search_fields = ['username', 'email', 'first_name', 'last_name']
     fieldsets = BaseUserAdmin.fieldsets + (
-        ('Additional Info', {'fields': ('role',)}),
+        ('Additional Info', {'fields': ('role', 'invite_code')}),
         ('Safe Locations (Student only)', {
             'fields': ('home_latitude', 'home_longitude', 'safe_place_latitude', 'safe_place_longitude'),
             'classes': ('collapse',)
@@ -68,14 +68,14 @@ class LiveLocationAdmin(admin.ModelAdmin):
 @admin.register(SOSAlert)
 class SOSAlertAdmin(admin.ModelAdmin):
     """Admin configuration for SOSAlert - updated to work with new model structure"""
-    list_display = ['id', 'student', 'travel_session', 'location', 'danger_level', 'timestamp']
-    list_filter = ['danger_level', 'timestamp']
+    list_display = ['id', 'student', 'travel_session', 'location', 'danger_level', 'is_active', 'timestamp']
+    list_filter = ['danger_level', 'is_active', 'timestamp']
     search_fields = ['student__username', 'location', 'description']
     readonly_fields = ['timestamp']
     date_hierarchy = 'timestamp'
     fieldsets = (
         ('Alert Information', {
-            'fields': ('student', 'travel_session', 'danger_level', 'timestamp')
+            'fields': ('student', 'travel_session', 'danger_level', 'is_active', 'timestamp')
         }),
         ('Location Details', {
             'fields': ('location', 'latitude', 'longitude', 'description')

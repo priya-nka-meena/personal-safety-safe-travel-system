@@ -1,5 +1,10 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
+import secrets
+
+
+def generate_invite_code():
+    return secrets.token_hex(4).upper()
 
 
 class CustomUser(AbstractUser):
@@ -10,6 +15,7 @@ class CustomUser(AbstractUser):
     ]
     
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='STUDENT')
+    invite_code = models.CharField(max_length=16, unique=True, null=True, blank=True)
     
     # Safe location fields (for STUDENT role only)
     home_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
@@ -23,6 +29,14 @@ class CustomUser(AbstractUser):
     
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+    def save(self, *args, **kwargs):
+        if self.role == 'STUDENT' and not self.invite_code:
+            code = generate_invite_code()
+            while CustomUser.objects.filter(invite_code=code).exists():
+                code = generate_invite_code()
+            self.invite_code = code
+        super().save(*args, **kwargs)
 
 
 class StudentParentLink(models.Model):
@@ -114,6 +128,7 @@ class SOSAlert(models.Model):
     description = models.TextField()
    
     danger_level = models.IntegerField(default=3)  # Default to HIGH (3)
+    is_active = models.BooleanField(default=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     
     # Store current location coordinates if available

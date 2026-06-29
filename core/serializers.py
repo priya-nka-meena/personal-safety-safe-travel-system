@@ -56,6 +56,9 @@ class TravelSessionSerializer(serializers.ModelSerializer):
 
 class LiveLocationSerializer(serializers.ModelSerializer):
     """Serializer for LiveLocation - travel_session is set automatically by the view"""
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, coerce_to_string=False)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, coerce_to_string=False)
+    
     class Meta:
         model = LiveLocation
         fields = ['id', 'travel_session', 'latitude', 'longitude', 'timestamp']
@@ -66,12 +69,26 @@ class SOSAlertSerializer(serializers.ModelSerializer):
     """Updated SOSAlert serializer - student and travel_session are set automatically by the view"""
     student_username = serializers.CharField(source='student.username', read_only=True)
     student_id = serializers.IntegerField(source='student.id', read_only=True)
+    student_full_name = serializers.SerializerMethodField()
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, coerce_to_string=False, required=False, allow_null=True)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, coerce_to_string=False, required=False, allow_null=True)
 
     class Meta:
         model = SOSAlert
         fields = [
-            'id', 'student', 'student_id', 'student_username', 'travel_session',
-            'location', 'latitude', 'longitude', 'description', 'danger_level', 'timestamp'
+            'id', 'student', 'student_id', 'student_username', 'student_full_name',
+            'travel_session', 'location', 'latitude', 'longitude', 'description',
+            'danger_level', 'is_active', 'timestamp',
         ]
         read_only_fields = ['id', 'student', 'travel_session', 'timestamp']
+
+    def get_student_full_name(self, obj):
+        if obj.student:
+            return obj.student.get_full_name() or obj.student.username
+        return None
+
+
+class LinkStudentSerializer(serializers.Serializer):
+    """Parent links a student by ID, email, or invite code."""
+    identifier = serializers.CharField(required=True, trim_whitespace=True)
 
