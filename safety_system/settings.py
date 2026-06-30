@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'corsheaders',  # CORS support for React frontend
     'rest_framework',
     'core',
+    'tracking',
 ]
 
 MIDDLEWARE = [

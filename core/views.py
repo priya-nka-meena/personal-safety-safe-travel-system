@@ -6,7 +6,8 @@ from django.contrib.auth import authenticate, login as django_login, logout as d
 from django.db.models import Q
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
-from .models import CustomUser, SOSAlert, TravelSession, LiveLocation, StudentParentLink
+from .models import CustomUser, SOSAlert, TravelSession as CoreTravelSession, LiveLocation, StudentParentLink
+from tracking.models import TravelSession
 from .serializers import (
     CustomUserSerializer,
     LoginSerializer,
@@ -220,8 +221,6 @@ def sos_alert_list_create(request):
             
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         
-        print("SOS ALERT - REQUEST DATA:", request.data)
-        print("SOS ALERT - SERIALIZER ERRORS:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -240,30 +239,68 @@ def travel_start(request):
             'message': 'Only students can start travel sessions'
         }, status=status.HTTP_403_FORBIDDEN)
     
-    # Check if there's an active session
+    # Check if there's an active session in the new tracking model
     active_session = TravelSession.objects.filter(
         student=request.user,
-        is_active=True
+        status='ACTIVE'
     ).first()
     
     if active_session:
         return Response({
             'success': False,
             'message': 'An active travel session already exists',
-            'session_id': active_session.id
+            'session_id': str(active_session.id)
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # Create new travel session
+    # Get current location for start
+    start_latitude = request.data.get('start_latitude')
+    start_longitude = request.data.get('start_longitude')
+    
+    if not start_latitude or not start_longitude:
+        return Response({
+            'success': False,
+            'message': 'start_latitude and start_longitude are required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get parent if provided
+    parent_id = request.data.get('parent_id')
+    parent = None
+    if parent_id:
+        try:
+            from core.models import StudentParentLink
+            parent = CustomUser.objects.get(id=parent_id, role='PARENT')
+            # Verify parent is linked to student
+            if not StudentParentLink.objects.filter(
+                student=request.user,
+                parent=parent
+            ).exists():
+                return Response({
+                    'success': False,
+                    'message': 'Parent is not linked to this student'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except CustomUser.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Parent not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Create new travel session using tracking.TravelSession
     session = TravelSession.objects.create(
         student=request.user,
-        is_active=True
+        parent=parent,
+        start_latitude=start_latitude,
+        start_longitude=start_longitude,
+        destination_latitude=request.data.get('destination_latitude'),
+        destination_longitude=request.data.get('destination_longitude'),
+        status='ACTIVE'
     )
     
-    serializer = TravelSessionSerializer(session)
     return Response({
         'success': True,
         'message': 'Travel session started',
-        'session': serializer.data
+        'session_id': str(session.id),
+        'status': session.status,
+        'started_at': session.started_at.isoformat()
     }, status=status.HTTP_201_CREATED)
 
 
@@ -280,10 +317,10 @@ def travel_stop(request):
             'message': 'Only students can stop travel sessions'
         }, status=status.HTTP_403_FORBIDDEN)
     
-    # Get active session
+    # Get active session from tracking model
     active_session = TravelSession.objects.filter(
         student=request.user,
-        is_active=True
+        status='ACTIVE'
     ).first()
     
     if not active_session:
@@ -293,15 +330,14 @@ def travel_stop(request):
         }, status=status.HTTP_404_NOT_FOUND)
     
     # Stop the session
-    active_session.is_active = False
-    active_session.end_time = timezone.now()
+    active_session.status = 'ENDED'
+    active_session.ended_at = timezone.now()
     active_session.save()
     
-    serializer = TravelSessionSerializer(active_session)
     return Response({
         'success': True,
         'message': 'Travel session stopped',
-        'session': serializer.data
+        'session_id': str(active_session.id)
     }, status=status.HTTP_200_OK)
 
 
@@ -318,10 +354,10 @@ def location_update(request):
             'message': 'Only students can update location'
         }, status=status.HTTP_403_FORBIDDEN)
     
-    # Get active travel session
+    # Get active travel session from tracking model
     active_session = TravelSession.objects.filter(
         student=request.user,
-        is_active=True
+        status='ACTIVE'
     ).first()
     
     if not active_session:
@@ -330,22 +366,41 @@ def location_update(request):
             'message': 'No active travel session found. Please start a travel session first.'
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # Create location update
-    serializer = LiveLocationSerializer(data=request.data)
-    if serializer.is_valid():
-        location = serializer.save(travel_session=active_session)
-        return Response({
-            'success': True,
-            'message': 'Location updated successfully',
-            'location': serializer.data
-        }, status=status.HTTP_201_CREATED)
+    # Update current location on session and add to history
+    from tracking.models import LocationHistory
+    from django.db import transaction
     
-    print("LOCATION UPDATE - REQUEST DATA:", request.data)
-    print("LOCATION UPDATE - SERIALIZER ERRORS:", serializer.errors)
+    latitude = request.data.get('latitude')
+    longitude = request.data.get('longitude')
+    
+    if not latitude or not longitude:
+        return Response({
+            'success': False,
+            'message': 'latitude and longitude are required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    with transaction.atomic():
+        # Update current location on session
+        active_session.current_latitude = latitude
+        active_session.current_longitude = longitude
+        active_session.last_update_at = timezone.now()
+        active_session.save()
+        
+        # Add to history
+        LocationHistory.objects.create(
+            session=active_session,
+            latitude=latitude,
+            longitude=longitude,
+            accuracy_meters=request.data.get('accuracy_meters')
+        )
+    
     return Response({
-        'success': False,
-        'errors': serializer.errors
-    }, status=status.HTTP_400_BAD_REQUEST)
+        'success': True,
+        'message': 'Location updated successfully',
+        'current_latitude': float(active_session.current_latitude),
+        'current_longitude': float(active_session.current_longitude),
+        'recorded_at': active_session.last_update_at.isoformat()
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -360,24 +415,29 @@ def travel_status(request):
 
     active_session = TravelSession.objects.filter(
         student=request.user,
-        is_active=True,
+        status='ACTIVE',
     ).first()
 
     latest = None
     if active_session:
-        loc = LiveLocation.objects.filter(travel_session=active_session).order_by('-timestamp').first()
-        if loc:
-            latest = {
-                'latitude': float(loc.latitude),
-                'longitude': float(loc.longitude),
-                'timestamp': loc.timestamp.isoformat(),
-            }
+        # Check if session is stale (expired)
+        from tracking.utils import is_session_expired
+        if is_session_expired(active_session):
+            active_session = None
+        else:
+            # Get location from the session's current location
+            if active_session.current_latitude and active_session.current_longitude:
+                latest = {
+                    'latitude': float(active_session.current_latitude),
+                    'longitude': float(active_session.current_longitude),
+                    'timestamp': active_session.last_update_at.isoformat(),
+                }
 
     return Response({
         'success': True,
         'travel_active': active_session is not None,
-        'session_id': active_session.id if active_session else None,
-        'session_started_at': active_session.start_time.isoformat() if active_session else None,
+        'session_id': str(active_session.id) if active_session else None,
+        'session_started_at': active_session.started_at.isoformat() if active_session else None,
         'latest_location': latest,
     })
 
@@ -405,20 +465,25 @@ def parent_monitoring(request):
         student = link.student
         active_session = TravelSession.objects.filter(
             student=student,
-            is_active=True,
+            status='ACTIVE',
         ).first()
 
         latest = None
         is_online = False
         if active_session:
-            loc = LiveLocation.objects.filter(travel_session=active_session).order_by('-timestamp').first()
-            if loc:
-                latest = {
-                    'latitude': float(loc.latitude),
-                    'longitude': float(loc.longitude),
-                    'timestamp': loc.timestamp.isoformat(),
-                }
-                is_online = loc.timestamp >= online_threshold
+            # Check if session is stale (expired)
+            from tracking.utils import is_session_expired
+            if is_session_expired(active_session):
+                active_session = None
+            else:
+                # Get location from the session's current location
+                if active_session.current_latitude and active_session.current_longitude:
+                    latest = {
+                        'latitude': float(active_session.current_latitude),
+                        'longitude': float(active_session.current_longitude),
+                        'timestamp': active_session.last_update_at.isoformat(),
+                    }
+                    is_online = active_session.last_update_at >= online_threshold
 
         students_payload.append({
             'link_id': link.id,
@@ -427,8 +492,8 @@ def parent_monitoring(request):
             'full_name': student.get_full_name() or student.username,
             'travel_active': active_session is not None,
             'is_online': is_online,
-            'session_id': active_session.id if active_session else None,
-            'session_started_at': active_session.start_time.isoformat() if active_session else None,
+            'session_id': str(active_session.id) if active_session else None,
+            'session_started_at': active_session.started_at.isoformat() if active_session else None,
             'latest_location': latest,
         })
 
