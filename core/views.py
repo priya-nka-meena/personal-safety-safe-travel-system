@@ -495,12 +495,112 @@ def parent_monitoring(request):
             'session_id': str(active_session.id) if active_session else None,
             'session_started_at': active_session.started_at.isoformat() if active_session else None,
             'latest_location': latest,
+            'home_latitude': float(student.home_latitude) if student.home_latitude else None,
+            'home_longitude': float(student.home_longitude) if student.home_longitude else None,
         })
 
     return Response({
         'success': True,
         'students': students_payload,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def parent_update_location(request):
+    """
+    POST: Update parent's live location
+    Only parents can update their location
+    """
+    if request.user.role != 'PARENT':
+        return Response({
+            'success': False,
+            'message': 'Only parents can update their location'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    latitude = request.data.get('latitude')
+    longitude = request.data.get('longitude')
+    
+    if not latitude or not longitude:
+        return Response({
+            'success': False,
+            'message': 'latitude and longitude are required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except ValueError:
+        return Response({
+            'success': False,
+            'message': 'Invalid coordinates format'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Validate coordinate ranges
+    if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+        return Response({
+            'success': False,
+            'message': 'Coordinates out of valid range'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Update parent's live location
+    request.user.parent_current_latitude = latitude
+    request.user.parent_current_longitude = longitude
+    request.user.parent_last_location_update = timezone.now()
+    request.user.is_sharing_live_location = True
+    request.user.save()
+    
+    return Response({
+        'success': True,
+        'message': 'Location updated successfully',
+        'latitude': latitude,
+        'longitude': longitude,
+        'updated_at': request.user.parent_last_location_update.isoformat()
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def parent_stop_sharing_location(request):
+    """
+    POST: Stop sharing parent's live location
+    Only parents can stop sharing their location
+    """
+    if request.user.role != 'PARENT':
+        return Response({
+            'success': False,
+            'message': 'Only parents can stop sharing their location'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    request.user.is_sharing_live_location = False
+    request.user.save()
+    
+    return Response({
+        'success': True,
+        'message': 'Location sharing stopped'
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def parent_get_location(request):
+    """
+    GET: Retrieve parent's live location status
+    Only parents can access their own location status
+    """
+    if request.user.role != 'PARENT':
+        return Response({
+            'success': False,
+            'message': 'Only parents can access their location status'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    return Response({
+        'success': True,
+        'is_sharing_live_location': request.user.is_sharing_live_location,
+        'current_latitude': float(request.user.parent_current_latitude) if request.user.parent_current_latitude else None,
+        'current_longitude': float(request.user.parent_current_longitude) if request.user.parent_current_longitude else None,
+        'last_location_update': request.user.parent_last_location_update.isoformat() if request.user.parent_last_location_update else None,
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

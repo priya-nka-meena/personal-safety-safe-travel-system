@@ -23,6 +23,9 @@ urlpatterns = [
 
     path('api/parent/monitoring/', views.parent_monitoring, name='parent-monitoring'),
     path('api/parent/link-student/', views.parent_link_student, name='parent-link-student'),
+    path('api/parent/update-location/', views.parent_update_location, name='parent-update-location'),
+    path('api/parent/stop-sharing-location/', views.parent_stop_sharing_location, name='parent-stop-sharing-location'),
+    path('api/parent/location/', views.parent_get_location, name='parent-get-location'),
     path('api/admin/overview/', views.admin_overview, name='admin-overview'),
 ]
 

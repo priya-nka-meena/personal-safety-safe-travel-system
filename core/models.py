@@ -23,6 +23,12 @@ class CustomUser(AbstractUser):
     safe_place_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     safe_place_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     
+    # Parent live location fields (for PARENT role only)
+    parent_current_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    parent_current_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    parent_last_location_update = models.DateTimeField(null=True, blank=True)
+    is_sharing_live_location = models.BooleanField(default=False)
+    
     class Meta:
         verbose_name = 'User'
         verbose_name_plural = 'Users'
