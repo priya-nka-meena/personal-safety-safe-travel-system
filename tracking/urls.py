@@ -13,4 +13,5 @@ urlpatterns = [
     path('api/tracking/sessions/<uuid:session_id>/', views.session_detail, name='session-detail'),
     path('api/tracking/sessions/<uuid:session_id>/history/', views.session_history, name='session-history'),
     path('api/tracking/sessions/<uuid:session_id>/distance/', views.session_distance, name='session-distance'),
+    path('api/tracking/sessions/completed/', views.completed_sessions, name='completed-sessions'),
 ]

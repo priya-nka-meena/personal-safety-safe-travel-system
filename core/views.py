@@ -17,6 +17,14 @@ from .serializers import (
     LinkStudentSerializer,
 )
 
+# ==================== SYSTEM ARCHITECTURE ====================
+# This system is organized into four core modules:
+# 1. Student Live Tracking (dynamic GPS stream) - tracking.TravelSession, tracking.LocationHistory
+# 2. Parent Home Location (static reference) - CustomUser.parent_home_latitude/longitude
+# 3. SOS System (event-based emergency lifecycle) - core.SOSAlert with resolution fields
+# 4. Travel History (time-series location logs) - core.LiveLocation (legacy), tracking.LocationHistory
+# =============================================================
+
 
 # ==================== AUTHENTICATION APIs ====================
 
@@ -172,6 +180,7 @@ def _find_student_by_identifier(identifier):
 
 
 # ==================== SOS ALERT APIs ====================
+# MODULE 3: SOS System (event-based emergency lifecycle)
 
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
@@ -222,6 +231,53 @@ def sos_alert_list_create(request):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def sos_alert_resolve(request, alert_id):
+    """
+    POST: Mark an SOS alert as resolved
+    Only parents or admins can resolve SOS alerts
+    """
+    # Only parents and admins can resolve alerts
+    if request.user.role not in ['PARENT'] and not request.user.is_staff:
+        return Response({
+            'success': False,
+            'message': 'Only parents or admins can resolve SOS alerts'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        alert = SOSAlert.objects.get(id=alert_id)
+    except SOSAlert.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'SOS alert not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # If parent, verify they are linked to the student
+    if request.user.role == 'PARENT':
+        if not StudentParentLink.objects.filter(
+            parent=request.user,
+            student=alert.student
+        ).exists():
+            return Response({
+                'success': False,
+                'message': 'You are not linked to this student'
+            }, status=status.HTTP_403_FORBIDDEN)
+    
+    # Mark as resolved
+    alert.is_resolved = True
+    alert.resolved_at = timezone.now()
+    alert.resolved_by = request.user
+    alert.save()
+    
+    serializer = SOSAlertSerializer(alert)
+    return Response({
+        'success': True,
+        'message': 'SOS alert resolved successfully',
+        'alert': serializer.data
+    }, status=status.HTTP_200_OK)
 
 
 # ==================== TRAVEL APIs ====================
@@ -444,6 +500,67 @@ def travel_status(request):
 
 # ==================== PARENT MONITORING ====================
 
+# Parent Home Location Management (Static reference point for student tracking)
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def parent_home_location(request):
+    """
+    GET: Retrieve parent's home location (static reference point)
+    POST: Update parent's home location
+    Only parents can access their home location
+    """
+    if request.user.role != 'PARENT':
+        return Response({
+            'success': False,
+            'message': 'Only parents can access home location'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    if request.method == 'GET':
+        return Response({
+            'success': True,
+            'home_latitude': float(request.user.parent_home_latitude) if request.user.parent_home_latitude else None,
+            'home_longitude': float(request.user.parent_home_longitude) if request.user.parent_home_longitude else None,
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'POST':
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        
+        if not latitude or not longitude:
+            return Response({
+                'success': False,
+                'message': 'latitude and longitude are required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            latitude = float(latitude)
+            longitude = float(longitude)
+        except ValueError:
+            return Response({
+                'success': False,
+                'message': 'Invalid coordinates format'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate coordinate ranges
+        if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+            return Response({
+                'success': False,
+                'message': 'Coordinates out of valid range'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update parent's home location
+        request.user.parent_home_latitude = latitude
+        request.user.parent_home_longitude = longitude
+        request.user.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Home location updated successfully',
+            'home_latitude': latitude,
+            'home_longitude': longitude
+        }, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -499,9 +616,12 @@ def parent_monitoring(request):
             'home_longitude': float(student.home_longitude) if student.home_longitude else None,
         })
 
+    # Include parent's home location in response
     return Response({
         'success': True,
         'students': students_payload,
+        'parent_home_latitude': float(request.user.parent_home_latitude) if request.user.parent_home_latitude else None,
+        'parent_home_longitude': float(request.user.parent_home_longitude) if request.user.parent_home_longitude else None,
     })
 
 
