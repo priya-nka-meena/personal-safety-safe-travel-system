@@ -1,6 +1,15 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 import secrets
+from tracking.models import TravelSession as TrackingTravelSession
+
+# ==================== SYSTEM ARCHITECTURE ====================
+# This system is organized into four core modules:
+# 1. Student Live Tracking (dynamic GPS stream) - tracking.TravelSession, tracking.LocationHistory
+# 2. Parent Home Location (static reference) - CustomUser.parent_home_latitude/longitude
+# 3. SOS System (event-based emergency lifecycle) - core.SOSAlert with resolution fields
+# 4. Travel History (time-series location logs) - core.LiveLocation (legacy), tracking.LocationHistory
+# =============================================================
 
 
 def generate_invite_code():
@@ -8,7 +17,13 @@ def generate_invite_code():
 
 
 class CustomUser(AbstractUser):
-    """Custom user model with role field"""
+    """
+    Custom user model with role field
+    
+    MODULE 2: Parent Home Location (static reference)
+    - parent_home_latitude/longitude: Static reference point for student tracking
+    - home_latitude/longitude: Student's home location (for STUDENT role)
+    """
     ROLE_CHOICES = [
         ('STUDENT', 'Student'),
         ('PARENT', 'Parent'),
@@ -22,6 +37,18 @@ class CustomUser(AbstractUser):
     home_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     safe_place_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     safe_place_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    
+    # Parent home location fields (for PARENT role only)
+    # This is the static reference point for student tracking
+    parent_home_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    parent_home_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    
+    # DEPRECATED: Parent live location fields (kept for backward compatibility)
+    # Will be removed in future migration after data migration
+    parent_current_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    parent_current_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    parent_last_location_update = models.DateTimeField(null=True, blank=True)
+    is_sharing_live_location = models.BooleanField(default=False)
     
     class Meta:
         verbose_name = 'User'
@@ -66,7 +93,11 @@ class StudentParentLink(models.Model):
 
 
 class TravelSession(models.Model):
-    """Travel session for tracking student journeys"""
+    """
+    MODULE 4: Travel History (time-series location logs)
+    Legacy travel session model - superseded by tracking.TravelSession
+    Kept for backward compatibility
+    """
     student = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
@@ -108,7 +139,13 @@ class LiveLocation(models.Model):
 
 
 class SOSAlert(models.Model):
-    """SOS Alert model - updated to use CustomUser and integrate with travel sessions"""
+    """SOS Alert model - updated to use CustomUser and integrate with travel sessions
+    
+    Lifecycle management:
+    - is_active: Whether the alert is currently active (default True)
+    - is_resolved: Whether the alert has been resolved by parent/admin (default False)
+    - resolved_at: Timestamp when the alert was resolved (nullable)
+    """
     student = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
@@ -118,7 +155,7 @@ class SOSAlert(models.Model):
         # blank=True
     )
     travel_session = models.ForeignKey(
-        TravelSession,
+        TrackingTravelSession,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -131,6 +168,29 @@ class SOSAlert(models.Model):
     is_active = models.BooleanField(default=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     
+    # Resolution lifecycle fields
+    is_resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='resolved_sos_alerts',
+        limit_choices_to={'role': 'PARENT'}
+    )
+
+    # Cancellation lifecycle fields
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cancelled_sos_alerts',
+        limit_choices_to={'role': 'STUDENT'}
+    )
+
     # Store current location coordinates if available
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)

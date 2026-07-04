@@ -70,6 +70,10 @@ class SOSAlertSerializer(serializers.ModelSerializer):
     student_username = serializers.CharField(source='student.username', read_only=True)
     student_id = serializers.IntegerField(source='student.id', read_only=True)
     student_full_name = serializers.SerializerMethodField()
+    resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True, allow_null=True)
+    cancelled_by_username = serializers.CharField(source='cancelled_by.username', read_only=True, allow_null=True)
+    status = serializers.SerializerMethodField()
+    cancelled_at = serializers.DateTimeField(read_only=True, allow_null=True)
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, coerce_to_string=False, required=False, allow_null=True)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, coerce_to_string=False, required=False, allow_null=True)
 
@@ -79,13 +83,24 @@ class SOSAlertSerializer(serializers.ModelSerializer):
             'id', 'student', 'student_id', 'student_username', 'student_full_name',
             'travel_session', 'location', 'latitude', 'longitude', 'description',
             'danger_level', 'is_active', 'timestamp',
+            'is_resolved', 'resolved_at', 'resolved_by', 'resolved_by_username',
+            'status', 'cancelled_at', 'cancelled_by', 'cancelled_by_username',
         ]
-        read_only_fields = ['id', 'student', 'travel_session', 'timestamp']
+        read_only_fields = ['id', 'student', 'travel_session', 'timestamp', 'is_resolved', 'resolved_at', 'resolved_by', 'status', 'cancelled_at', 'cancelled_by']
 
     def get_student_full_name(self, obj):
         if obj.student:
             return obj.student.get_full_name() or obj.student.username
         return None
+
+    def get_status(self, obj):
+        """Compute status from boolean fields for frontend compatibility"""
+        if obj.is_resolved:
+            return 'RESOLVED'
+        elif not obj.is_active:
+            return 'CANCELLED'
+        else:
+            return 'ACTIVE'
 
 
 class LinkStudentSerializer(serializers.Serializer):
