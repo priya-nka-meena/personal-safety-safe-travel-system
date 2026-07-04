@@ -246,7 +246,7 @@ def sos_alert_resolve(request, alert_id):
             'success': False,
             'message': 'Only parents or admins can resolve SOS alerts'
         }, status=status.HTTP_403_FORBIDDEN)
-    
+
     try:
         alert = SOSAlert.objects.get(id=alert_id)
     except SOSAlert.DoesNotExist:
@@ -254,7 +254,7 @@ def sos_alert_resolve(request, alert_id):
             'success': False,
             'message': 'SOS alert not found'
         }, status=status.HTTP_404_NOT_FOUND)
-    
+
     # If parent, verify they are linked to the student
     if request.user.role == 'PARENT':
         if not StudentParentLink.objects.filter(
@@ -265,19 +265,83 @@ def sos_alert_resolve(request, alert_id):
                 'success': False,
                 'message': 'You are not linked to this student'
             }, status=status.HTTP_403_FORBIDDEN)
-    
+
     # Mark as resolved
     alert.is_resolved = True
     alert.resolved_at = timezone.now()
     alert.resolved_by = request.user
     alert.save()
-    
+
     serializer = SOSAlertSerializer(alert)
     return Response({
         'success': True,
         'message': 'SOS alert resolved successfully',
         'alert': serializer.data
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def sos_alert_cancel(request, alert_id):
+    """
+    POST: Cancel an SOS alert (by the student who created it)
+    Only students can cancel their own SOS alerts
+    """
+    # Only students can cancel alerts
+    if request.user.role != 'STUDENT':
+        return Response({
+            'success': False,
+            'message': 'Only students can cancel SOS alerts'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        alert = SOSAlert.objects.get(id=alert_id)
+    except SOSAlert.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'SOS alert not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    # Verify the alert belongs to the student
+    if alert.student != request.user:
+        return Response({
+            'success': False,
+            'message': 'You can only cancel your own SOS alerts'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    # Mark as cancelled
+    alert.is_active = False
+    alert.cancelled_at = timezone.now()
+    alert.cancelled_by = request.user
+    alert.save()
+
+    serializer = SOSAlertSerializer(alert)
+    return Response({
+        'success': True,
+        'message': 'SOS alert cancelled successfully',
+        'alert': serializer.data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sos_alert_history(request):
+    """
+    GET: Retrieve SOS alert history for the authenticated user
+    Students see their own alerts, parents see alerts from linked students
+    """
+    if request.user.role == 'STUDENT':
+        alerts = SOSAlert.objects.filter(student=request.user)
+    elif request.user.role == 'PARENT':
+        student_ids = request.user.student_links.values_list('student_id', flat=True)
+        alerts = SOSAlert.objects.filter(student_id__in=student_ids)
+    elif request.user.is_staff:
+        alerts = SOSAlert.objects.all()
+    else:
+        alerts = SOSAlert.objects.none()
+
+    serializer = SOSAlertSerializer(alerts, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 # ==================== TRAVEL APIs ====================

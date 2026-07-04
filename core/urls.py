@@ -21,6 +21,8 @@ urlpatterns = [
     # SOS Alert APIs
     path('api/sos-alerts/', views.sos_alert_list_create, name='sos-alert-list-create'),
     path('api/sos-alerts/<int:alert_id>/resolve/', views.sos_alert_resolve, name='sos-alert-resolve'),
+    path('api/sos-alerts/<int:alert_id>/cancel/', views.sos_alert_cancel, name='sos-alert-cancel'),
+    path('api/sos-alerts/history/', views.sos_alert_history, name='sos-alert-history'),
 
     path('api/parent/monitoring/', views.parent_monitoring, name='parent-monitoring'),
     path('api/parent/link-student/', views.parent_link_student, name='parent-link-student'),

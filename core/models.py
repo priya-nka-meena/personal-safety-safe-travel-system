@@ -179,7 +179,18 @@ class SOSAlert(models.Model):
         related_name='resolved_sos_alerts',
         limit_choices_to={'role': 'PARENT'}
     )
-    
+
+    # Cancellation lifecycle fields
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cancelled_sos_alerts',
+        limit_choices_to={'role': 'STUDENT'}
+    )
+
     # Store current location coordinates if available
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
