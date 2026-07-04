@@ -217,7 +217,7 @@ def sos_alert_list_create(request):
             # Get active travel session if exists
             active_session = TravelSession.objects.filter(
                 student=request.user,
-                is_active=True
+                status='ACTIVE'
             ).first()
             
             # Create SOS alert with HIGH danger level
@@ -787,7 +787,7 @@ def admin_overview(request):
         'total_users': CustomUser.objects.count(),
         'total_students': CustomUser.objects.filter(role='STUDENT').count(),
         'total_parents': CustomUser.objects.filter(role='PARENT').count(),
-        'active_travel_sessions': TravelSession.objects.filter(is_active=True).count(),
+        'active_travel_sessions': TravelSession.objects.filter(status='ACTIVE').count(),
         'sos_alerts': SOSAlert.objects.count(),
         'active_sos_alerts': SOSAlert.objects.filter(is_active=True).count(),
         'student_parent_links': StudentParentLink.objects.count(),

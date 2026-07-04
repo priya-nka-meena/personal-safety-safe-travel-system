@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 import secrets
+from tracking.models import TravelSession as TrackingTravelSession
 
 # ==================== SYSTEM ARCHITECTURE ====================
 # This system is organized into four core modules:
@@ -154,7 +155,7 @@ class SOSAlert(models.Model):
         # blank=True
     )
     travel_session = models.ForeignKey(
-        TravelSession,
+        TrackingTravelSession,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
