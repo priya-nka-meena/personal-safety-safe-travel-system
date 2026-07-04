@@ -32,13 +32,17 @@ A full-stack personal safety and travel tracking system designed to help parents
 ```
 personal-safety-safe-travel-system/
 ├── core/                    # Core models and authentication
-│   ├── models.py          # CustomUser, SOSAlert, TravelSession (legacy)
-│   ├── views.py           # Auth, SOS, Parent monitoring APIs
-│   └── urls.py            # Core URL routing
-├── tracking/               # Enhanced tracking system
-│   ├── models.py          # TravelSession, LocationHistory
+│   ├── models.py          # CustomUser, SOSAlert, StudentParentLink, TravelSession (legacy)
+│   ├── views.py           # Auth, SOS, Parent monitoring, Legacy travel APIs
+│   ├── urls.py            # Core URL routing
+│   └── serializers.py     # Core serializers
+├── tracking/               # Enhanced tracking system (primary)
+│   ├── models.py          # TravelSession (UUID-based), LocationHistory
 │   ├── views.py           # Session management, history APIs
-│   └── urls.py            # Tracking URL routing
+│   ├── urls.py            # Tracking URL routing
+│   ├── serializers.py     # Tracking serializers
+│   ├── permissions.py     # Session access permissions
+│   └── utils.py           # Distance calculation, session expiration
 ├── safety_system/          # Django project configuration
 │   ├── settings.py        # Project settings
 │   └── urls.py            # Root URL configuration
@@ -48,8 +52,10 @@ personal-safety-safe-travel-system/
     │   │   ├── dashboards/ # Student, Parent, Admin dashboards
     │   │   ├── Map/        # LiveMap component
     │   │   ├── alerts/     # SOS alert components
-    │   │   └── auth/       # Login/Register components
-    │   ├── services/       # API service layer
+    │   │   ├── auth/       # Login/Register components
+    │   │   ├── sos/        # SOS history components
+    │   │   └── travel/     # Journey detail components
+    │   ├── services/       # API service layer (api.js, tracking.js)
     │   └── hooks/          # Custom React hooks
     └── package.json
 ```
@@ -65,9 +71,10 @@ personal-safety-safe-travel-system/
 - Student-Parent relationship management
 
 **APIs:**
+- `GET /api/auth/csrf/` - Get CSRF token for session-authenticated requests
 - `POST /api/auth/student/register/` - Student registration
 - `POST /api/auth/parent/register/` - Parent registration
-- `POST /api/auth/login/` - User login
+- `POST /api/auth/login/` - User login (supports username or email)
 - `GET /api/auth/me/` - Current user info
 - `POST /api/auth/logout/` - User logout
 
@@ -82,11 +89,14 @@ personal-safety-safe-travel-system/
 
 **APIs:**
 - `POST /api/tracking/sessions/start/` - Start travel session
-- `POST /api/tracking/sessions/<id>/location/` - Update location
-- `POST /api/tracking/sessions/<id>/end/` - End travel session
-- `GET /api/tracking/sessions/<id>/` - Get session details
-- `GET /api/tracking/sessions/<id>/history/` - Get location history
-- `GET /api/tracking/sessions/<id>/distance/` - Calculate distance
+- `POST /api/tracking/sessions/<uuid:session_id>/location/` - Update location
+- `POST /api/tracking/sessions/<uuid:session_id>/end/` - End travel session
+- `GET /api/tracking/sessions/<uuid:session_id>/` - Get session details
+- `GET /api/tracking/sessions/<uuid:session_id>/history/` - Get location history
+- `GET /api/tracking/sessions/<uuid:session_id>/distance/` - Calculate distance
+- `GET /api/tracking/sessions/completed/` - Get completed sessions
+
+**Note:** Session IDs are UUIDs, not integers. Legacy travel APIs exist in core module (`/api/travel/start/`, `/api/travel/stop/`, `/api/travel/status/`, `/api/location/update/`) but the tracking APIs are the primary implementation.
 
 ### 3. Parent Dashboard
 
@@ -100,9 +110,14 @@ personal-safety-safe-travel-system/
 
 **APIs:**
 - `GET /api/parent/monitoring/` - Get linked students and their status
-- `POST /api/parent/link-student/` - Link a student
+- `POST /api/parent/link-student/` - Link a student (by ID, email, or invite code)
 - `GET /api/parent/home-location/` - Get parent home location
 - `POST /api/parent/home-location/` - Update parent home location
+
+**Deprecated APIs (still functional):**
+- `POST /api/parent/update-location/` - Update parent live location (deprecated)
+- `POST /api/parent/stop-sharing-location/` - Stop sharing parent live location (deprecated)
+- `GET /api/parent/location/` - Get parent live location status (deprecated)
 
 ### 4. SOS Alert System
 
@@ -114,9 +129,18 @@ personal-safety-safe-travel-system/
 - Resolution timestamp tracking
 
 **APIs:**
-- `GET /api/sos-alerts/` - Get SOS alerts
-- `POST /api/sos-alerts/` - Create SOS alert
-- `POST /api/sos-alerts/<id>/resolve/` - Mark alert as resolved
+- `GET /api/sos-alerts/` - Get SOS alerts (role-filtered)
+- `POST /api/sos-alerts/` - Create SOS alert (students only)
+- `POST /api/sos-alerts/<int:alert_id>/resolve/` - Mark alert as resolved (parents/admins only)
+- `POST /api/sos-alerts/<int:alert_id>/cancel/` - Cancel alert (students only)
+- `GET /api/sos-alerts/history/` - Get SOS alert history
+
+**SOS Alert Lifecycle:**
+- `is_active`: Whether the alert is currently active (default True)
+- `is_resolved`: Whether the alert has been resolved by parent/admin (default False)
+- `status`: Computed field (ACTIVE, RESOLVED, CANCELLED)
+- `cancelled_at`/`cancelled_by`: Cancellation tracking (students can cancel their own alerts)
+- `resolved_at`/`resolved_by`: Resolution tracking (parents/admins can resolve)
 
 ### 5. Route History System
 
@@ -127,7 +151,12 @@ personal-safety-safe-travel-system/
 - Polyline route visualization on map
 
 **APIs:**
-- `GET /api/tracking/sessions/<id>/history/` - Get location history
+- `GET /api/tracking/sessions/<uuid:session_id>/history/` - Get location history
+
+**History API Behavior:**
+- Accepts optional `since` query parameter for incremental fetches
+- If `since` is invalid or missing, returns last 30 minutes of data
+- Returns array of location points with latitude, longitude, and timestamp
 
 ## Data Flow
 
@@ -135,7 +164,7 @@ personal-safety-safe-travel-system/
 
 1. **Student Location Update**
    - Student device captures GPS coordinates
-   - Frontend sends POST request to `/api/tracking/sessions/<id>/location/`
+   - Frontend sends POST request to `/api/tracking/sessions/<uuid:session_id>/location/`
    - Backend validates authentication and session ownership
    - Backend updates `TravelSession.current_latitude/longitude`
    - Backend creates new `LocationHistory` record
@@ -145,23 +174,25 @@ personal-safety-safe-travel-system/
    - Parent dashboard polls `/api/parent/monitoring/` every 8 seconds
    - Backend retrieves linked students and their active sessions
    - Backend includes current location and session status
+   - Backend checks session expiration (2-minute timeout)
    - Frontend updates UI with latest data
 
 3. **Session History Retrieval**
    - Parent selects student session to view on map
-   - Frontend polls `/api/tracking/sessions/<id>/history/` with `since` parameter
-   - Backend returns location points since last fetch (or last 30 minutes)
+   - Frontend polls `/api/tracking/sessions/<uuid:session_id>/history/` with `since` parameter
+   - Backend returns location points since last fetch (or last 30 minutes if invalid)
    - Frontend renders polyline route on map
 
 4. **SOS Alert Flow**
    - Student triggers SOS alert from dashboard
    - Frontend sends POST to `/api/sos-alerts/` with location and description
-   - Backend creates `SOSAlert` record with `is_resolved=False`
+   - Backend creates `SOSAlert` record with `is_active=True`, `is_resolved=False`
    - Parent dashboard polls and displays new alert
    - Parent clicks "Mark as Resolved"
-   - Frontend sends POST to `/api/sos-alerts/<id>/resolve/`
+   - Frontend sends POST to `/api/sos-alerts/<int:alert_id>/resolve/`
    - Backend updates `is_resolved=True`, `resolved_at=now()`, `resolved_by=parent`
    - Frontend refreshes alert list
+   - Student can also cancel their own alert via `/api/sos-alerts/<int:alert_id>/cancel/`
 
 ## Key Design Decisions
 
@@ -271,11 +302,12 @@ The polling approach may not scale well for large deployments:
 
 ### Session Expiration
 
-Travel sessions expire after 2 hours of inactivity:
-- Students must restart tracking after long stops
+Travel sessions expire after 2 minutes of inactivity (not 2 hours):
+- Sessions are marked as EXPIRED if no location update for 2 minutes
+- Students must restart tracking after expiration
 - No automatic session continuation
-- May miss location data during gaps
-- Designed for typical commute durations, not all-day tracking
+- Designed for active travel monitoring, not all-day tracking
+- Expiration is checked on each API call via `is_session_expired()` utility
 
 ## Future Improvements
 
@@ -437,6 +469,9 @@ The frontend will be available at `http://localhost:3000` and will proxy API req
 - Location data accessible only to linked parents
 - SOS alerts include resolution tracking for audit trail
 - UUID-based session IDs prevent enumeration attacks
+- Session access permissions enforced via `IsSessionParticipant` permission class
+- Parents can only resolve SOS alerts for linked students
+- Students can only cancel their own SOS alerts
 
 ## License
 
