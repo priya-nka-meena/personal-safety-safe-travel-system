@@ -160,6 +160,7 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://personal-safety-safe-travel-system-1.onrender.com",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -168,6 +169,7 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://personal-safety-safe-travel-system-1.onrender.com",
 ]
 
 # Session + CSRF cookies for credentialed API requests from the React dev server
