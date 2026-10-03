@@ -5,7 +5,6 @@ from rest_framework.response import Response
 from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-import requests
 from .models import TravelSession, LocationHistory
 from .serializers import (
     TravelSessionCreateSerializer,
@@ -15,7 +14,7 @@ from .serializers import (
     DistanceRequestSerializer,
 )
 from .permissions import IsSessionParticipant
-from .utils import haversine_distance, mark_session_expired
+from .utils import haversine_distance, mark_session_expired, finalize_session_summary
 from core.models import CustomUser, StudentParentLink
 
 # ==================== SYSTEM ARCHITECTURE ====================
@@ -25,39 +24,6 @@ from core.models import CustomUser, StudentParentLink
 # 3. SOS System (event-based emergency lifecycle) - core.SOSAlert with resolution fields
 # 4. Travel History (time-series location logs) - core.LiveLocation (legacy), tracking.LocationHistory
 # =============================================================
-
-
-def reverse_geocode(latitude, longitude):
-    """
-    Convert latitude/longitude to human-readable location name using OpenStreetMap Nominatim API
-    Returns a simple location name (e.g., "NIT Delhi, Delhi, India")
-    """
-    try:
-        url = f"https://nominatim.openstreetmap.org/reverse"
-        params = {
-            'lat': latitude,
-            'lon': longitude,
-            'format': 'json'
-        }
-        headers = {
-            'User-Agent': 'SafeTravelSystem/1.0'
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            # Try to get a readable address
-            if 'display_name' in data:
-                # Simplify the display name to get the most relevant parts
-                address = data['display_name']
-                # Split by commas and take first few parts
-                parts = [p.strip() for p in address.split(',')]
-                # Return first 2-3 parts for a concise location name
-                if len(parts) >= 2:
-                    return ', '.join(parts[:2])
-                return parts[0] if parts else None
-    except Exception as e:
-        print(f"Reverse geocoding failed for ({latitude}, {longitude}): {e}")
-    return None
 
 
 @api_view(['POST'])
@@ -199,53 +165,8 @@ def session_end(request, session_id):
     
     session.status = 'ENDED'
     session.ended_at = timezone.now()
-    
-    # Calculate duration
-    if session.started_at and session.ended_at:
-        session.duration = session.ended_at - session.started_at
-    
-    # Calculate total distance from location history
-    history_points = session.history.all().order_by('recorded_at')
-    if history_points.count() >= 2:
-        total_distance = 0
-        for i in range(len(history_points) - 1):
-            point1 = history_points[i]
-            point2 = history_points[i + 1]
-            distance = haversine_distance(
-                float(point1.latitude),
-                float(point1.longitude),
-                float(point2.latitude),
-                float(point2.longitude)
-            )
-            total_distance += distance
-        session.total_distance = total_distance
-    
-    # Reverse geocode start location
-    if session.start_latitude and session.start_longitude:
-        start_name = reverse_geocode(
-            float(session.start_latitude),
-            float(session.start_longitude)
-        )
-        if start_name:
-            session.start_location_name = start_name
-    
-    # Reverse geocode destination (use current location as destination)
-    if session.current_latitude and session.current_longitude:
-        dest_name = reverse_geocode(
-            float(session.current_latitude),
-            float(session.current_longitude)
-        )
-        if dest_name:
-            session.destination_location_name = dest_name
-    elif session.destination_latitude and session.destination_longitude:
-        dest_name = reverse_geocode(
-            float(session.destination_latitude),
-            float(session.destination_longitude)
-        )
-        if dest_name:
-            session.destination_location_name = dest_name
-    
     session.save()
+    finalize_session_summary(session, force=True)
     
     return Response({
         'session_id': str(session.id),
@@ -473,7 +394,7 @@ def completed_sessions(request):
         sessions = TravelSession.objects.filter(
             student=request.user,
             status__in=['ENDED', 'EXPIRED']
-        ).order_by('-started_at')
+        ).prefetch_related('history').order_by('-started_at')
     elif request.user.role == 'PARENT':
         student_ids = StudentParentLink.objects.filter(
             parent=request.user
@@ -481,13 +402,16 @@ def completed_sessions(request):
         sessions = TravelSession.objects.filter(
             student_id__in=student_ids,
             status__in=['ENDED', 'EXPIRED']
-        ).select_related('student').order_by('-started_at')
+        ).select_related('student').prefetch_related('history').order_by('-started_at')
     else:
         return Response({
             'success': False,
             'message': 'Access denied'
         }, status=status.HTTP_403_FORBIDDEN)
     
+    for session in sessions:
+        finalize_session_summary(session)
+
     serializer = TravelSessionSerializer(sessions, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -518,5 +442,8 @@ def session_detail(request, session_id):
                 'message': 'Access denied'
             }, status=status.HTTP_403_FORBIDDEN)
     
+    if session.status in ('ENDED', 'EXPIRED'):
+        finalize_session_summary(session)
+
     serializer = TravelSessionSerializer(session)
     return Response(serializer.data, status=status.HTTP_200_OK)

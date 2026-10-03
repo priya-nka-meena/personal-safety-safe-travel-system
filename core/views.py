@@ -453,6 +453,8 @@ def travel_stop(request):
     active_session.status = 'ENDED'
     active_session.ended_at = timezone.now()
     active_session.save()
+    from tracking.utils import finalize_session_summary
+    finalize_session_summary(active_session, force=True)
     
     return Response({
         'success': True,

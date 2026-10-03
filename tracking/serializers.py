@@ -19,6 +19,7 @@ class TravelSessionSerializer(serializers.ModelSerializer):
     """Serializer for reading travel session data"""
     student_username = serializers.CharField(source='student.username', read_only=True)
     parent_username = serializers.CharField(source='parent.username', read_only=True, allow_null=True)
+    duration = serializers.SerializerMethodField()
     
     class Meta:
         model = TravelSession
@@ -27,9 +28,18 @@ class TravelSessionSerializer(serializers.ModelSerializer):
             'status', 'start_latitude', 'start_longitude',
             'destination_latitude', 'destination_longitude',
             'current_latitude', 'current_longitude',
+            'start_location_name', 'destination_location_name',
+            'total_distance', 'duration',
             'started_at', 'ended_at', 'last_update_at'
         ]
         read_only_fields = ['started_at', 'last_update_at']
+
+    def get_duration(self, obj):
+        if obj.duration:
+            return int(obj.duration.total_seconds())
+        if obj.started_at and obj.ended_at:
+            return int((obj.ended_at - obj.started_at).total_seconds())
+        return None
 
 
 class LocationHistorySerializer(serializers.ModelSerializer):
